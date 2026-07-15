@@ -1,3 +1,27 @@
+/**
+ * ============================================================
+ * AIAnalysis.gs
+ * ------------------------------------------------------------
+ * 毎晩の時限トリガーで実行され、
+ *   1. 翌日のカレンダー予定を取得
+ *   2. 直近の睡眠履歴を取得
+ *   3. OpenAI APIにアドバイス生成を依頼
+ *   4. LINEで通知
+ * までを一括実行する。
+ * ============================================================
+ */
+
+/**
+ * メインのエントリーポイント。
+ * 時限式トリガー(例: 毎日20:00)から呼び出される想定。
+ *
+ * トリガー設定方法:
+ *   GASエディタ左側の時計アイコン「トリガー」→「トリガーを追加」
+ *   実行する関数: analyzeAndNotify
+ *   イベントのソース: 時間主導型
+ *   時間ベースのトリガーのタイプ: 日タイマー
+ *   時刻: 午後8時～9時 など
+ */
 function analyzeAndNotify() {
   try {
     logEvent_('analyzeAndNotify 開始');
@@ -221,4 +245,124 @@ function buildAdvicePrompt(nextEvent, sleepHistory) {
 /** Dateオブジェクトを "HH:mm" 形式の文字列にフォーマットする */
 function formatTime_(date) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'HH:mm');
+}
+
+/**
+ * ============================================================
+ * Nature Remo 照度ポーリング
+ * ------------------------------------------------------------
+ * GASの時限トリガーで数分おきに呼び出し、照度センサーの値を確認する。
+ * 暗い(消灯)と判断したら REMO_DARK フラグを立て、
+ * 明るい(点灯)と判断したらフラグを倒すとともに起床トリガーとして処理する。
+ *
+ * トリガー設定方法(就寝時間帯に絞って実行する):
+ *   GASエディタ「トリガー」→「トリガーを追加」
+ *   実行する関数: checkRemoLightLevel
+ *   イベントのソース: 時間主導型
+ *   タイプ: 分ベースのタイマー → 毎5分 (または毎10分)
+ *
+ *   ただし24時間ずっと動かすとAPIのレートリミット(1時間30回)に引っかかる可能性があるため、
+ *   就寝前後の時間帯(例: 21時〜翌8時)だけ動かすよう、関数内で時刻チェックを行っている。
+ * ============================================================
+ */
+function checkRemoLightLevel() {
+  // 就寝前後の時間帯(21時〜翌8時)以外は実行しない
+  // これによりAPI呼び出し回数を抑え、レートリミットを避ける
+  const now = new Date();
+  const hour = now.getHours();
+  const isActiveHour = hour >= 21 || hour < 8;
+  if (!isActiveHour) {
+    return;
+  }
+
+  const accessToken = getRequiredProperty('NATURE_REMO_ACCESS_TOKEN');
+
+  const options = {
+    method: 'get',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    muteHttpExceptions: true,
+  };
+
+  const response = UrlFetchApp.fetch(NATURE_REMO_CONFIG.API_URL, options);
+  const responseCode = response.getResponseCode();
+
+  if (responseCode !== 200) {
+    logEvent_(`Nature Remo API呼び出し失敗 (HTTP ${responseCode}): ${response.getContentText()}`);
+    return;
+  }
+
+  const devices = JSON.parse(response.getContentText());
+
+  if (!devices || devices.length === 0) {
+    logEvent_('Nature Remoデバイスが見つかりませんでした');
+    return;
+  }
+
+  // 複数台ある場合は最初のデバイスを使用する。
+  // 特定のデバイスを指定したい場合は devices.find(d => d.name === 'デバイス名') で絞り込む。
+  const device = devices[0];
+  const newestEvents = device.newest_events;
+
+  if (!newestEvents || !newestEvents.il) {
+    logEvent_(`照度センサー(il)のデータが見つかりません。デバイス名: ${device.name}`);
+    return;
+  }
+
+  const illuminance = newestEvents.il.val;
+  const isDark = illuminance <= NATURE_REMO_CONFIG.DARKNESS_THRESHOLD;
+
+  logEvent_(`Nature Remo照度: ${illuminance} (閾値: ${NATURE_REMO_CONFIG.DARKNESS_THRESHOLD}, 暗い: ${isDark})`);
+
+  const currentFlag = getFlag(SLEEP_CONDITION_FLAGS.REMO_DARK);
+
+  if (isDark && !currentFlag) {
+    // 新たに暗くなった → 就寝フラグを立てる
+    setFlag(SLEEP_CONDITION_FLAGS.REMO_DARK, true);
+    logEvent_('消灯を検知: REMO_DARKフラグをONにしました');
+
+    // フラグを立てた後、AND条件全体を再評価する
+    // (他の条件がすでに揃っていた場合に就寝記録が走るよう、handleSleepEventと同じ評価ロジックを呼ぶ)
+    const allConditionsMet = checkAllSleepConditionsMet();
+    const alreadyRecorded = getFlag(FLAG_KEYS.SLEEP_RECORDED);
+    if (allConditionsMet && !alreadyRecorded) {
+      const sleepTime = new Date();
+      recordSleepTime(sleepTime);
+      setFlag(FLAG_KEYS.SLEEP_RECORDED, true);
+      PropertiesService.getScriptProperties().setProperty(
+        FLAG_KEYS.LAST_SLEEP_TIMESTAMP,
+        sleepTime.toISOString()
+      );
+      logEvent_(`就寝時刻を記録(Remoトリガー): ${sleepTime.toISOString()}`);
+    }
+
+  } else if (!isDark && currentFlag) {
+    // 明るくなった(点灯) → 起床トリガーとして処理する
+    logEvent_('点灯を検知: 起床処理を開始します');
+    handleWakeEvent('remo');
+  }
+}
+
+/**
+ * 照度の閾値を調整するためのテスト用関数。
+ * GASエディタから手動実行すると、現在の照度値をログに表示する。
+ * 消灯直後に実行して表示された値を参考に、DARKNESS_THRESHOLDを設定してください。
+ */
+function checkCurrentIlluminance() {
+  const accessToken = getRequiredProperty('NATURE_REMO_ACCESS_TOKEN');
+  const options = {
+    method: 'get',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    muteHttpExceptions: true,
+  };
+  const response = UrlFetchApp.fetch(NATURE_REMO_CONFIG.API_URL, options);
+  const devices = JSON.parse(response.getContentText());
+  const device = devices[0];
+  const il = device.newest_events.il;
+  console.log(`デバイス名: ${device.name}`);
+  console.log(`現在の照度(il.val): ${il.val}`);
+  console.log(`最終更新時刻: ${il.created_at}`);
+  console.log(`現在の閾値(DARKNESS_THRESHOLD): ${NATURE_REMO_CONFIG.DARKNESS_THRESHOLD}`);
+  console.log(`現在の設定では「${il.val <= NATURE_REMO_CONFIG.DARKNESS_THRESHOLD ? '暗い(フラグON)' : '明るい(フラグOFF)'}」と判定されます`);
 }
