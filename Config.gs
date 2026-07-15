@@ -1,3 +1,23 @@
+/**
+ * ============================================================
+ * Config.gs
+ * ------------------------------------------------------------
+ * システム全体の設定値を集約するファイル。
+ * APIキーやシークレット情報は「スクリプトプロパティ」に保存し、
+ * このファイルに直接書き込まないこと。
+ *
+ * 設定方法:
+ *   GASエディタ → 左側「プロジェクトの設定」(歯車アイコン)
+ *   → 「スクリプト プロパティ」 に以下のキーを追加する
+ *
+ *   OPENAI_API_KEY         : OpenAIのAPIキー
+ *   LINE_CHANNEL_ACCESS_TOKEN : LINE Messaging APIのチャンネルアクセストークン
+ *   LINE_USER_ID            : 通知を送りたいユーザーのLINE ID
+ *   SPREADSHEET_ID           : データ記録先のスプレッドシートID
+ *   WEBHOOK_SECRET            : Webhook認証用の共通シークレット(後述)
+ * ============================================================
+ */
+
 // スプレッドシートのシート名
 const SHEET_NAME = 'SleepLog';
 
@@ -81,6 +101,15 @@ const OPENAI_CONFIG = {
 // LINE Messaging APIの設定
 const LINE_CONFIG = {
   PUSH_API_URL: 'https://api.line.me/v2/bot/message/push',
+};
+
+// Nature Remo Cloud APIの設定
+const NATURE_REMO_CONFIG = {
+  API_URL: 'https://api.nature.global/1/devices',
+  // 照度センサー(il)の「暗い」と判断する閾値。
+  // 0が真っ暗、値が大きいほど明るい。部屋の照明を消した直後の値を実測して調整する。
+  // 一般的に10以下が消灯後の暗さに相当することが多いが、部屋や設置場所によって異なる。
+  DARKNESS_THRESHOLD: 10,
 };
 
 // 過去何日分の睡眠データを分析に使うか
