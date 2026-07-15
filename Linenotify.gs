@@ -1,3 +1,22 @@
+/**
+ * ============================================================
+ * LineNotify.gs
+ * ------------------------------------------------------------
+ * LINE Messaging APIを使ってユーザーにプッシュ通知を送る。
+ * ============================================================
+ */
+
+/**
+ * LINE Messaging API経由でテキストメッセージをプッシュ通知する。
+ *
+ * 事前準備:
+ *   1. LINE Developersコンソールでチャンネルを作成(Messaging API)
+ *   2. チャンネルアクセストークン(長期)を発行
+ *   3. 通知先のユーザーID(またはグループID)を取得
+ *      ※ユーザーIDは、ボットを友達追加した状態でWebhookイベントを受信するか、
+ *        LINE公式アカウントのチャット画面で確認する
+ *   4. スクリプトプロパティに LINE_CHANNEL_ACCESS_TOKEN と LINE_USER_ID を設定
+ */
 function sendLineNotification(message) {
   const accessToken = getRequiredProperty('LINE_CHANNEL_ACCESS_TOKEN');
   const userId = getRequiredProperty('LINE_USER_ID');
