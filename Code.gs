@@ -1,3 +1,17 @@
+/**
+ * ============================================================
+ * Code.gs
+ * ------------------------------------------------------------
+ * 各センサー(Qwatch / Nature Remo / MacroDroid)からのWebhookを
+ * 受信し、状態フラグを管理して就寝・起床を判定・記録する。
+ * ============================================================
+ */
+
+/**
+ * ブラウザで直接URLを開いた場合や、ヘルスチェック目的でGETアクセスされた場合に
+ * 正常なレスポンスを返す。doGetが未定義だと、GASが内部的に302を返すことがあり、
+ * 「動いているのかどうか」の確認がしづらくなるため、明示的に実装している。
+ */
 function doGet(e) {
   return createJsonResponse(200, {
     status: 'ok',
@@ -5,6 +19,19 @@ function doGet(e) {
   });
 }
 
+/**
+ * Webアプリとして公開されるエンドポイント。
+ * 各デバイスはこのURLに対してPOSTリクエストを送信する。
+ *
+ * 想定リクエスト形式 (URLクエリパラメータ or POST body の両対応):
+ *   ?source=qwatch&direction=sleep&secret=xxxx
+ *   ?source=remo&direction=sleep&secret=xxxx
+ *   ?source=macrodroid&direction=sleep&secret=xxxx
+ *   ?source=macrodroid&direction=wake&secret=xxxx  (起床トリガー)
+ *
+ * secret は WEBHOOK_SECRET スクリプトプロパティと一致する値を要求し、
+ * 誰でも知っているWebアプリURLに対する不正なPOSTを防ぐ。
+ */
 function doPost(e) {
   try {
     // LINEプラットフォームからのWebhook(ユーザーがLINE公式アカウントにメッセージを送った時など)は
@@ -303,4 +330,67 @@ function testSleepFlow() {
 
 function helloTest() {
   console.log('テスト実行: これが表示されればログは機能しています');
+}
+
+function testOpenAI() {
+  const apiKey = getRequiredProperty('OPENAI_API_KEY');
+  const response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    payload: JSON.stringify({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'こんにちは。一言で返答してください。' }],
+      max_tokens: 50,
+    }),
+    muteHttpExceptions: true,
+  });
+  console.log(`HTTPステータス: ${response.getResponseCode()}`);
+  console.log(`レスポンス: ${response.getContentText()}`);
+}
+
+function checkCurrentFlags() {
+  const flags = {
+    qwatch: getFlag(SLEEP_CONDITION_FLAGS.QWATCH_MOTION),
+    remo: getFlag(SLEEP_CONDITION_FLAGS.REMO_DARK),
+    ios_charge: getFlag(SLEEP_CONDITION_FLAGS.IOS_CHARGE_START),
+    ios_dnd: getFlag(SLEEP_CONDITION_FLAGS.IOS_DND_ON),
+    sleep_recorded: getFlag(FLAG_KEYS.SLEEP_RECORDED),
+    last_sleep_timestamp: PropertiesService.getScriptProperties()
+                          .getProperty(FLAG_KEYS.LAST_SLEEP_TIMESTAMP),
+  };
+  console.log('現在のフラグ状態:');
+  console.log(JSON.stringify(flags, null, 2));
+}
+
+function testFlagsStepByStep() {
+  // まずリセット
+  resetAllSleepFlags();
+  console.log('--- リセット完了 ---');
+
+  // 1つ目: Qwatch
+  const r1 = handleSleepEvent('qwatch');
+  console.log('Qwatch後:', JSON.stringify(r1));
+  checkCurrentFlags();
+
+  // 2つ目: ios_charge
+  const r2 = handleSleepEvent('ios_charge');
+  console.log('ios_charge後:', JSON.stringify(r2));
+  checkCurrentFlags();
+
+  // 3つ目: remo (Remoのフラグはポーリングで立つが、ここでは直接テスト)
+  const r3 = handleSleepEvent('remo');
+  console.log('remo後:', JSON.stringify(r3));
+  checkCurrentFlags();
+
+  // 4つ目: ios_dnd → ここで就寝記録されるはず
+  const r4 = handleSleepEvent('ios_dnd');
+  console.log('ios_dnd後:', JSON.stringify(r4));
+  checkCurrentFlags();
+}
+
+function testWakeEvent() {
+  handleWakeEvent('ios_dnd');
+  console.log('起床処理完了');
+  checkCurrentFlags();
 }
